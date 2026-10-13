@@ -1505,13 +1505,16 @@ pub struct ClipboardItem {
     entries: Vec<ClipboardEntry>,
 }
 
-/// Either a ClipboardString or a ClipboardImage
+/// A ClipboardString, a ClipboardImage, or copied files
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClipboardEntry {
     /// A string entry
     String(ClipboardString),
     /// An image entry
     Image(Image),
+    /// Files copied in a file manager. Read on Linux only, where the item also
+    /// carries the text the file manager offers for them. Never written.
+    ExternalPaths(crate::ExternalPaths),
 }
 
 impl ClipboardItem {

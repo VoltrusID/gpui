@@ -47,7 +47,10 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-use crate::{ClipboardItem, Image, ImageFormat, hash};
+use crate::{
+    ClipboardEntry, ClipboardItem, Image, ImageFormat, hash,
+    platform::linux::platform::paths_from_uri_list,
+};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -77,7 +80,7 @@ x11rb::atom_manager! {
         TEXT_MIME_UNKNOWN: b"text/plain",
 
         // HTML: b"text/html",
-        // URI_LIST: b"text/uri-list",
+        URI_LIST: b"text/uri-list",
 
         PNG__MIME: ImageFormat::mime_type(ImageFormat::Png ).as_bytes(),
         JPEG_MIME: ImageFormat::mime_type(ImageFormat::Jpeg).as_bytes(),
@@ -1044,15 +1047,40 @@ impl Clipboard {
 
         let atom_none: Atom = AtomEnum::NONE.into();
 
-        const FORMAT_ATOM_COUNT: usize = TEXT_FORMAT_COUNT + IMAGE_FORMAT_COUNT;
+        const FORMAT_ATOM_COUNT: usize = 1 + TEXT_FORMAT_COUNT + IMAGE_FORMAT_COUNT;
 
         let mut format_atoms: [Atom; FORMAT_ATOM_COUNT] = [atom_none; FORMAT_ATOM_COUNT];
 
-        // image formats first, as they are more specific, and read will return the first
+        // copied files first, as a file manager also offers their names as text. Then
+        // image formats, as they are more specific, and read will return the first
         // format that the contents can be converted to
-        format_atoms[0..IMAGE_FORMAT_COUNT].copy_from_slice(&image_format_atoms);
-        format_atoms[IMAGE_FORMAT_COUNT..].copy_from_slice(&text_format_atoms);
+        format_atoms[0] = self.inner.atoms.URI_LIST;
+        format_atoms[1..=IMAGE_FORMAT_COUNT].copy_from_slice(&image_format_atoms);
+        format_atoms[IMAGE_FORMAT_COUNT + 1..].copy_from_slice(&text_format_atoms);
         debug_assert!(!format_atoms.contains(&atom_none));
+
+        let content = |result: ClipboardData| -> Result<ClipboardItem> {
+            for (format_atom, image_format) in image_format_atoms.into_iter().zip(image_formats) {
+                if result.format == format_atom {
+                    let bytes = result.bytes;
+                    let id = hash(&bytes);
+                    return Ok(ClipboardItem::new_image(&Image {
+                        id,
+                        format: image_format,
+                        bytes,
+                    }));
+                }
+            }
+
+            let text = if result.format == self.inner.atoms.STRING {
+                // ISO Latin-1
+                // See: https://stackoverflow.com/questions/28169745/what-are-the-options-to-convert-iso-8859-1-latin-1-to-a-string-utf-8
+                result.bytes.into_iter().map(|c| c as char).collect()
+            } else {
+                String::from_utf8(result.bytes).map_err(|_| Error::ConversionFailure)?
+            };
+            Ok(ClipboardItem::new_string(text))
+        };
 
         let result = self.inner.read(&format_atoms, selection)?;
 
@@ -1061,26 +1089,19 @@ impl Clipboard {
             self.inner.atom_name(result.format)
         );
 
-        for (format_atom, image_format) in image_format_atoms.into_iter().zip(image_formats) {
-            if result.format == format_atom {
-                let bytes = result.bytes;
-                let id = hash(&bytes);
-                return Ok(ClipboardItem::new_image(&Image {
-                    id,
-                    format: image_format,
-                    bytes,
-                }));
-            }
+        if result.format != self.inner.atoms.URI_LIST {
+            return content(result);
         }
-
-        let text = if result.format == self.inner.atoms.STRING {
-            // ISO Latin-1
-            // See: https://stackoverflow.com/questions/28169745/what-are-the-options-to-convert-iso-8859-1-latin-1-to-a-string-utf-8
-            result.bytes.into_iter().map(|c| c as char).collect()
-        } else {
-            String::from_utf8(result.bytes).map_err(|_| Error::ConversionFailure)?
+        let beside = self
+            .inner
+            .read(&format_atoms[1..], selection)
+            .and_then(content);
+        let Some(paths) = paths_from_uri_list(&result.bytes) else {
+            return beside;
         };
-        Ok(ClipboardItem::new_string(text))
+        let mut entries = vec![ClipboardEntry::ExternalPaths(paths)];
+        entries.extend(beside.into_iter().flat_map(ClipboardItem::into_entries));
+        Ok(ClipboardItem { entries })
     }
 
     pub fn is_owner(&self, selection: ClipboardKind) -> bool {

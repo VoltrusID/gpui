@@ -685,6 +685,18 @@ pub(super) fn get_xkb_compose_state(cx: &xkb::Context) -> Option<xkb::compose::S
     state
 }
 
+/// The local files a `text/uri-list` names, as a file manager copies them.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) fn paths_from_uri_list(list: &[u8]) -> Option<crate::ExternalPaths> {
+    let paths: smallvec::SmallVec<[PathBuf; 2]> = String::from_utf8_lossy(list)
+        .lines()
+        .filter_map(|line| http_client::Url::parse(line).ok())
+        .filter(|url| url.scheme() == "file")
+        .filter_map(|url| url.to_file_path().ok())
+        .collect();
+    (!paths.is_empty()).then_some(crate::ExternalPaths(paths))
+}
+
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) unsafe fn read_fd(mut fd: filedescriptor::FileDescriptor) -> Result<Vec<u8>> {
     let mut file = unsafe { File::from_raw_fd(fd.as_raw_fd()) };
@@ -1035,5 +1047,23 @@ mod tests {
             zero,
             Point::new(px(5.0), px(5.1))
         ),);
+    }
+
+    #[test]
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    fn test_paths_from_uri_list() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _};
+
+        let list = b"# copied\r\nfile:///home/me/a%20b.txt\r\nfile:///tmp/caf%C3%A9/%FF\r\n\
+            trash:///gone.txt\r\nsftp://host/remote.txt\r\nhttps://example.com/\r\nnot a uri\r\n";
+        let paths = paths_from_uri_list(list).unwrap();
+        assert_eq!(
+            paths.paths(),
+            [
+                PathBuf::from("/home/me/a b.txt"),
+                PathBuf::from(OsStr::from_bytes(b"/tmp/caf\xc3\xa9/\xff")),
+            ]
+        );
+        assert!(paths_from_uri_list(b"trash:///gone.txt\r\n/home/me/typed.txt").is_none());
     }
 }

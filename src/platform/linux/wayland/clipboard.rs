@@ -11,8 +11,8 @@ use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
 use crate::{
-    ClipboardEntry, ClipboardItem, Image, ImageFormat, WaylandClientStatePtr, hash,
-    platform::linux::platform::read_fd,
+    ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat, WaylandClientStatePtr, hash,
+    platform::linux::platform::{paths_from_uri_list, read_fd},
 };
 
 /// Text mime types that we'll offer to other programs.
@@ -135,6 +135,26 @@ impl<T: ReceiveData> DataOffer<T> {
         }
         None
     }
+
+    fn read_paths(&self, connection: &Connection) -> Option<ExternalPaths> {
+        if !self.has_mime_type(FILE_LIST_MIME_TYPE) {
+            return None;
+        }
+        paths_from_uri_list(&self.read_bytes(connection, FILE_LIST_MIME_TYPE)?)
+    }
+
+    /// Copied files come first, with the text or image offered beside them.
+    fn read_item(&self, connection: &Connection) -> Option<ClipboardItem> {
+        let content = self
+            .read_text(connection)
+            .or_else(|| self.read_image(connection));
+        let Some(paths) = self.read_paths(connection) else {
+            return content;
+        };
+        let mut entries = vec![ClipboardEntry::ExternalPaths(paths)];
+        entries.extend(content.into_iter().flat_map(ClipboardItem::into_entries));
+        Some(ClipboardItem { entries })
+    }
 }
 
 impl Clipboard {
@@ -205,9 +225,7 @@ impl Clipboard {
             return self.contents.clone();
         }
 
-        let item = offer
-            .read_text(&self.connection)
-            .or_else(|| offer.read_image(&self.connection))?;
+        let item = offer.read_item(&self.connection)?;
 
         self.cached_read = Some(item.clone());
         Some(item)
