@@ -313,12 +313,24 @@ impl rwh::HasDisplayHandle for RawWindow {
 
 impl rwh::HasWindowHandle for X11Window {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        unimplemented!()
+        let window = NonZeroU32::new(self.0.x_window).ok_or(rwh::HandleError::Unavailable)?;
+        let handle = rwh::XcbWindowHandle::new(window);
+        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
     }
 }
 impl rwh::HasDisplayHandle for X11Window {
     fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        unimplemented!()
+        let connection =
+            as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(&*self.0.xcb)
+                as *mut c_void;
+        let connection = NonNull::new(connection).ok_or(rwh::HandleError::Unavailable)?;
+        let state = self
+            .0
+            .state
+            .try_borrow()
+            .map_err(|_| rwh::HandleError::Unavailable)?;
+        let handle = rwh::XcbDisplayHandle::new(Some(connection), state.display.id().0 as i32);
+        Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
     }
 }
 
